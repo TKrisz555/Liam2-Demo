@@ -1,0 +1,200 @@
+# This is a LIAM2 simulation file.
+
+# This example builds upon the previous ones to introduce the concept of
+# households, including young adults leaving their parents household.
+
+# Technically, this demonstrates how to define a second entity,
+# how to define links, how to access the fields of linked individuals, how to
+# link individuals together, how change or break an existing link and
+# how the new() function can be used with a different entity.
+
+# To run the simulation, press F6 if you are using the editor bundled with
+# LIAM2, otherwise run the following command in a console:
+# [BUNDLEPATH]\liam2\main run demo05.yml
+globals:
+    periodic:
+        - RETIREMENTAGE: int
+
+entities:
+    # here is our new entity
+    household:
+        # we do not need a fields section at all in this case since households
+        # do not have any field other than id and period, which are implicit
+        links:
+            persons: {type: one2many, target: person, field: hh_id}
+
+        processes:
+            csv_output():
+                # write the period,
+                # average number of persons by household,
+                # and average number of children (age < 18) by household
+                # to a csv file
+                - csv(period,
+                      avg(persons.count()),
+                      avg(persons.count(age < 18)),
+                      fname='hh_size.csv', mode='a')
+
+            init_reports():
+                - csv('period', 'Avg persons', 'Avg children',
+                      fname='hh_size.csv')
+
+            # after death, some households can be empty, this function removes
+            # them
+            clean_empty():
+                - empty: persons.count() == 0
+                - show('Number of empty households:', count(empty))
+                - remove(empty)
+
+    person:
+        fields:
+            # period and id are implicit
+            - age:    int
+            - gender: bool
+
+            # link fields
+            # id of the mother
+            - mother_id: int
+            # id of the household
+            - hh_id:     int
+
+            # fields not present in input
+            - agegroup: {type: int, initialdata: False}
+
+        links:
+            # links can be between individuals of the same entity...
+
+            # many2one links link potentially many individuals (children
+            # in this case) to one individual (their mother)
+            mother: {type: many2one, target: person, field: mother_id}
+
+            # one2many links link one individual (a mother) to potentially many
+            # individuals (her children)
+            children: {type: one2many, target: person, field: mother_id}
+
+            # links can also be to a different entity
+            household: {type: many2one, target: household, field: hh_id}
+
+        macros:
+            UNSET: -1
+
+            ISMALE: gender
+            ISFEMALE: not gender
+
+            ACTIVEAGE: (age >= 15) and (age < RETIREMENTAGE)
+
+        processes:
+            ageing():
+                - age: age + 1
+                - agegroup: if(age < 50,
+                               5 * trunc(age / 5),
+                               10 * trunc(age / 10))
+
+            birth():
+                # do NOT do this in a real model
+                - to_give_birth: (id % 100) < 6 and ISFEMALE and
+                                 (age >= 15) and (age <= 50)
+                # we link newborns to their mother, and place them in the
+                # same household than their mother.
+                - new('person', filter=to_give_birth,
+                      mother_id = id,
+                      hh_id = hh_id,
+                      age = 0,
+                      agegroup = 0,
+                      gender = id % 2 == 1)
+                # to access the value of another individual linked via a
+                # many2one link, use: linkname.fieldname
+                - show('Average age of new mothers',
+                       avg(mother.age, filter=age == 0))
+                - show('Average age of persons mothers',
+                       avg(mother.age))
+                # Note that aggregate methods like avg skip missing values by
+                # default. avg(mother.age) is thus equivalent to
+                # avg(mother.age, filter=mother.age != UNSET)
+                # compare this with
+                # avg(mother.age, skip_na=False)
+                # which takes into account persons with no (known) mother (-1)
+                - show('Average age of mothers',
+                       avg(age, filter=children.count() > 0))
+
+            death():
+                - dead: if(ISMALE, age >= 90, age >= 95)
+
+                # We break the link to deceased mothers: the "mother" link is no
+                # longer valid for the concerned individuals after this point.
+                - mother_id: if(mother.dead, UNSET, mother_id)
+                - show('Avg age of dead men',
+                       avg(age, filter=dead and ISMALE))
+                - show('Avg age of dead women',
+                       avg(age, filter=dead and ISFEMALE))
+                - remove(dead)
+
+            get_a_life():
+                # create new households for persons aged 24+ who are still
+                # living with their mother
+                - in_mother_hh: hh_id == mother.hh_id
+                - should_move: in_mother_hh and (age >= 24)
+
+                # This process does two things:
+                # 1) create as many new households as necessary
+                # 2) change hh_id to the id of the newly created households
+                - hh_id: if(should_move, new('household'), hh_id)
+
+                # we could have written it in two explicit steps like below,
+                # but we usually prefer the way above which avoids repeating the
+                # filter.
+                # - new_hh_id: new('household', filter=should_move)
+                # - hh_id: if(should_move, new_hh_id, hh_id)
+
+                # bring along their children, if any
+                - hh_id: if(in_mother_hh and mother.should_move,
+                            mother.hh_id,
+                            hh_id)
+
+            chart_demography():
+                - bar(groupby(agegroup, gender),
+                      fname='demography_{period}.png')
+
+            csv_output():
+                - csv(groupby(agegroup, gender),
+                      fname='demography_{period}.csv')
+
+                - csv(period,
+                      avg(age, filter=ISMALE), avg(age, filter=ISFEMALE),
+                      avg(age),
+                      fname='average_age.csv', mode='a')
+                - csv(period, count(not ACTIVEAGE) / count(ACTIVEAGE),
+                      fname='dependency_ratio.csv', mode='a')
+
+            init_reports():
+                - csv('period', 'men', 'women', 'total',
+                      fname='average_age.csv')
+                - csv('period', 'ratio', fname='dependency_ratio.csv')
+
+simulation:
+    init:
+        - household: [init_reports, csv_output]
+        - person: [init_reports, csv_output]
+
+    processes:
+        - person: [
+            ageing,
+            birth,
+            death,
+        ]
+        - household: [clean_empty]
+        - person: [get_a_life]
+        # reporting
+        - person: [
+            # chart_demography,
+            csv_output
+        ]
+        - household: [csv_output]
+
+    input:
+        file: demo.h5
+    output:
+        path: output
+        file: simulation.h5
+
+    start_period: 2016
+    periods: 20

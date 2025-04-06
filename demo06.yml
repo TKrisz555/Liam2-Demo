@@ -1,0 +1,180 @@
+# This is a LIAM2 simulation file.
+
+# This example tries to get more realistic results out of the birth and
+# death functions of previous models by using observed probabilities and
+# alignment.
+
+# Technically, this demonstrates the choice and logit_regr (with alignment)
+# functions, and the default_entity option.
+
+# To run the simulation, press F6 if you are using the editor bundled with
+# LIAM2, otherwise run the following command in a console:
+# [BUNDLEPATH]\liam2\main run demo06.yml
+globals:
+    periodic:
+        - RETIREMENTAGE: int
+
+entities:
+    household:
+        links:
+            persons: {type: one2many, target: person, field: hh_id}
+
+        processes:
+            csv_output():
+                - csv(period,
+                      avg(persons.count()),
+                      avg(persons.count(age < 18)),
+                      fname='hh_size.csv', mode='a')
+
+            init_reports():
+                - csv('period', 'N persons', 'N children',
+                      fname='hh_size.csv')
+
+            clean_empty():
+                - empty: persons.count() == 0
+                - show('Number of empty households:', count(empty))
+                - remove(empty)
+
+    person:
+        fields:
+            # period and id are implicit
+            - age:        int
+            - gender:     bool
+
+            # link fields
+            - mother_id:  int
+            - hh_id:      int
+
+            # fields not present in input
+            - agegroup: {type: int, initialdata: False}
+
+        links:
+            mother: {type: many2one, target: person, field: mother_id}
+            household: {type: many2one, target: household, field: hh_id}
+            children: {type: one2many, target: person, field: mother_id}
+
+        macros:
+            UNSET: -1
+
+            MALE: True
+            FEMALE: False
+            ISMALE: gender
+            ISFEMALE: not gender
+
+            ACTIVEAGE: (age >= 15) and (age < RETIREMENTAGE)
+
+        # possible transitions and regressions
+        processes:
+            ageing():
+                - age: age + 1
+                - agegroup: if(age < 50,
+                               5 * trunc(age / 5),
+                               10 * trunc(age / 10))
+
+            birth():
+                # logit_regr with an "align" argument will trigger alignment,
+                # that is the number of persons selected (ie for which the
+                # function returns True) will match the proportions given in
+                # al_p_birth.csv (by age and period in this case). In other
+                # words, the proportion of women of each age who give birth
+                # per year are given in the alignment file. Since we use a
+                # constant as first argument to logit_regr, within each group
+                # (eg women aged 20), the selected individuals will be chosen
+                # purely randomly.
+                - to_give_birth: logit_regr(0.0,
+                                            filter=ISFEMALE and (age >= 15) and (age <= 50),
+                                            align='al_p_birth.csv')
+
+                # choice generates values within a set of predefined values
+                # having defined probabilities. In this case, it will generate
+                # MALE (ie True) with a 51% probability and FEMALE (False) with
+                # a 49% probability. Choice can work with more than two
+                # predefined values to choose from, but the probabilities always
+                # need to sum to 1.
+                - new('person', filter=to_give_birth,
+                      mother_id = id,
+                      hh_id = hh_id,
+                      age = 0,
+                      agegroup = 0,
+                      gender = choice([MALE, FEMALE], [0.51, 0.49]))
+                - show('Average age of new mothers',
+                       avg(mother.age, filter=age == 0))
+                - show('Average age of persons mothers',
+                       avg(mother.age))
+                - show('Average age of mothers',
+                       avg(age, filter=children.count() > 0))
+
+            death():
+                - dead: if(ISMALE,
+                           logit_regr(0.0, align='al_p_dead_m.csv'),
+                           logit_regr(0.0, align='al_p_dead_f.csv'))
+                - mother_id: if(mother.dead, UNSET, mother_id)
+
+                - show('Avg age of dead men',
+                       avg(age, filter=dead and ISMALE))
+                - show('Avg age of dead women',
+                       avg(age, filter=dead and ISFEMALE))
+                - remove(dead)
+
+            get_a_life():
+                # create new households for persons aged 24+ who are still
+                # living with their mother
+                - in_mother_hh: hh_id == mother.hh_id
+                - should_move: in_mother_hh and (age >= 24)
+                - hh_id: if(should_move, new('household'), hh_id)
+                # bring along their children, if any
+                - hh_id: if(in_mother_hh and mother.should_move,
+                            mother.hh_id,
+                            hh_id)
+
+            chart_demography():
+                - bar(groupby(agegroup, gender),
+                      fname='demography_{period}.png')
+
+            csv_output():
+                - csv(groupby(agegroup, gender),
+                      fname='demography_{period}.csv')
+
+                - csv(period,
+                      avg(age, filter=ISMALE), avg(age, filter=ISFEMALE),
+                      avg(age),
+                      fname='average_age.csv', mode='a')
+                - csv(period, count(not ACTIVEAGE) / count(ACTIVEAGE),
+                      fname='dependency_ratio.csv', mode='a')
+
+            init_reports():
+                - csv('period', 'men', 'women', 'total',
+                      fname='average_age.csv')
+                - csv('period', 'ratio', fname='dependency_ratio.csv')
+
+simulation:
+    init:
+        - household: [init_reports, csv_output]
+        - person: [init_reports, csv_output]
+
+    processes:
+        - person: [
+            ageing,
+            birth,
+            death,
+        ]
+        - household: [clean_empty]
+        - person: [get_a_life]
+        # reporting
+        - person: [
+            chart_demography,
+            csv_output
+        ]
+        - household: [csv_output]
+
+    input:
+        file: demo.h5
+    output:
+        path: output
+        file: simulation.h5
+
+    start_period: 2016
+    periods: 2
+    # at the end of the simulation, start the interactive console directly in
+    # the "person" entity
+    default_entity: person
