@@ -1,18 +1,11 @@
 entities:
     person:
         fields:
-            # All entities have two implicit integer fields: period and id.
-            # You do not need to define them.
             - age:    int
             - gender: bool
 
-        # Here is a list of defined functions for this entity. The actual list
-        # of functions that will be executed in the simulation and in which
-        # order is defined later.
         processes:
-            # ageing is the name of the function
             ageing():
-                # A simple process: increment the age of all persons by one.
                 - age: age + 1
 
 simulation:
@@ -22,14 +15,8 @@ simulation:
     input:
         file: demo.h5
     output:
-        # all output files will be in the output subdirectory (this path is
-        # relative to the path of the simulation file). This is optional.
         path: output
         file: simulation.h5
 
-    # We will simulate from 2016 to 2025 (10 periods). Note that even though
-    # periods correspond to years in this example, you can use any other time
-    # step (days, weeks, months, ...) as long as it is an integer value. In
-    # other words, you are free to interpret the period in any way you like.
     start_period: 2016
     periods: 10
